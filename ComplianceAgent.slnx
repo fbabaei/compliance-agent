@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Compliance.Agent.Api/Compliance.Agent.Api.csproj" />
+  </Folder>
+</Solution>
