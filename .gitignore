@@ -53,9 +53,10 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 
-/databin/
-obj/
-*.user
-.vs/
-tmp_out.txt
-tmp_err.txt
+/data
+*/prompts/*
+extractedjson/
+
+appsettings.json
+appsettings.Development.json
+appsettings.Production.json
