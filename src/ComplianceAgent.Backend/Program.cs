@@ -167,33 +167,25 @@ public static class PromptLibrary
     private static readonly PromptPackage V1 = new(
         Version: "v1",
         AgentInstructions: """
-            You are an AI system that extracts structured MDR arrangement data from source text.
+                        You are an AI system that extracts structured arrangement details from source text.
 
-            Core behavior:
-            - Extract only information explicitly present in the source.
-            - Never infer, assume, or invent missing values.
-            - If a field is missing, return null (or [] for entities).
-            - Output must be deterministic and JSON-only.
-            - Do not output markdown or explanations.
+                        Rules:
+                        - Use only explicit facts from the source.
+                        - Never invent missing values.
+                        - Return null for missing single-value fields and [] for missing list fields.
+                        - Return JSON only.
             """,
         ExtractionPromptTemplate: """
-            Convert the source file '{{input_file}}' into a structured MDR draft JSON.
+                        Convert source file '{{input_file}}' into structured draft JSON.
 
             Rules:
             - Extract only explicit facts from the source.
             - Do not infer, normalize, or guess values.
-            - Keep incomplete fields as null (or [] for arrays).
+                        - Keep unknown fields as null (or [] for arrays).
             - Do not add fields that are not in the schema.
             - Always set "status" to "draft".
 
-            Field definitions:
-            - arrangementId: Arrangement identifier if explicitly present.
-            - country: Country linked to the arrangement.
-            - entities: Explicitly named entities involved in the arrangement.
-            - description: Concise summary strictly grounded in source text.
-            - transactionType: Explicit transaction category if stated.
-
-            Output JSON schema (exact):
+                        Output schema:
             {
               "arrangementId": null,
               "country": null,
@@ -203,19 +195,7 @@ public static class PromptLibrary
               "status": "draft"
             }
 
-            Example behavior:
-            If source says: "ABC GmbH entered a financing agreement in Germany."
-            Then valid output may be:
-            {
-              "arrangementId": null,
-              "country": "Germany",
-              "entities": ["ABC GmbH"],
-              "description": "Financing agreement",
-              "transactionType": null,
-              "status": "draft"
-            }
-
-            Return only valid JSON.
+                        Return valid JSON only.
             """);
 }
 
