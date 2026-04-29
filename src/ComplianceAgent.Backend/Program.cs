@@ -1,33 +1,6 @@
 using System.Text.Json;
 using ComplianceAgent.Services;
 
-const string DefaultAgentInstructions = """
-You are a regulatory compliance extraction agent.
-
-Rules:
-- Read the uploaded document using Code Interpreter.
-- Return ONLY valid JSON.
-- Do not include markdown fences.
-- If a value is missing, set it to null (or [] for arrays).
-- Do not infer or invent values.
-""";
-
-const string DefaultExtractionPrompt = """
-Extract structured arrangement data from the uploaded file '{{input_file}}'.
-
-Return ONLY JSON using this exact shape:
-{
-    "arrangementId": null,
-    "country": null,
-    "entities": [],
-    "description": null,
-    "transactionType": null,
-    "status": "draft"
-}
-
-Do not add extra fields.
-""";
-
 // --- Parse CLI arguments ---
 string? fileInputArg = null;
 for (int i = 0; i < args.Length; i++)
@@ -66,13 +39,16 @@ var inputFile = ResolveInputFilePath(configuredInput, Path.GetDirectoryName(sett
 Console.WriteLine($"Processing: {Path.GetFileName(inputFile)}");
 
 // --- Load prompts ---
+var promptPackage = PromptLibrary.GetPackage(settings.Foundry.PromptVersion);
+Console.WriteLine($"Using prompt package version: {promptPackage.Version}");
+
 var agentInstructions = await LoadPromptTextAsync(
     "ExtractionAgentInstructions.txt",
-    DefaultAgentInstructions);
+    promptPackage.AgentInstructions);
 
 var extractionPromptTemplate = await LoadPromptTextAsync(
     "ExtractionPrompt.txt",
-    DefaultExtractionPrompt);
+    promptPackage.ExtractionPromptTemplate);
 
 var extractionPrompt = extractionPromptTemplate.Replace("{{input_file}}", Path.GetFileName(inputFile));
 extractionPrompt = extractionPrompt.Replace("{{file_name}}", Path.GetFileName(inputFile));
@@ -167,6 +143,80 @@ static async Task<string> LoadPromptTextAsync(string fileName, string fallback)
 
     Console.WriteLine($"Prompt file '{fileName}' not found. Using built-in default template.");
     return fallback;
+}
+
+public sealed record PromptPackage(
+    string Version,
+    string AgentInstructions,
+    string ExtractionPromptTemplate);
+
+public static class PromptLibrary
+{
+    public static PromptPackage GetPackage(string? requestedVersion)
+    {
+        if (string.Equals(requestedVersion, "v1", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(requestedVersion))
+        {
+            return V1;
+        }
+
+        Console.WriteLine($"Unknown prompt version '{requestedVersion}'. Falling back to v1.");
+        return V1;
+    }
+
+    private static readonly PromptPackage V1 = new(
+        Version: "v1",
+        AgentInstructions: """
+            You are an AI system that extracts structured MDR arrangement data from source text.
+
+            Core behavior:
+            - Extract only information explicitly present in the source.
+            - Never infer, assume, or invent missing values.
+            - If a field is missing, return null (or [] for entities).
+            - Output must be deterministic and JSON-only.
+            - Do not output markdown or explanations.
+            """,
+        ExtractionPromptTemplate: """
+            Convert the source file '{{input_file}}' into a structured MDR draft JSON.
+
+            Rules:
+            - Extract only explicit facts from the source.
+            - Do not infer, normalize, or guess values.
+            - Keep incomplete fields as null (or [] for arrays).
+            - Do not add fields that are not in the schema.
+            - Always set "status" to "draft".
+
+            Field definitions:
+            - arrangementId: Arrangement identifier if explicitly present.
+            - country: Country linked to the arrangement.
+            - entities: Explicitly named entities involved in the arrangement.
+            - description: Concise summary strictly grounded in source text.
+            - transactionType: Explicit transaction category if stated.
+
+            Output JSON schema (exact):
+            {
+              "arrangementId": null,
+              "country": null,
+              "entities": [],
+              "description": null,
+              "transactionType": null,
+              "status": "draft"
+            }
+
+            Example behavior:
+            If source says: "ABC GmbH entered a financing agreement in Germany."
+            Then valid output may be:
+            {
+              "arrangementId": null,
+              "country": "Germany",
+              "entities": ["ABC GmbH"],
+              "description": "Financing agreement",
+              "transactionType": null,
+              "status": "draft"
+            }
+
+            Return only valid JSON.
+            """);
 }
 
 public class BackendSettings
