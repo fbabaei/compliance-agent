@@ -1,22 +1,22 @@
 ## Description
-Implements Issue #5 with a simple, generic backend flow that uses Azure AI Foundry agent execution, supports text input, loads external prompt files, and validates JSON output.
+Implements Issue #6 with a simple, generic unified ingestion flow that uses Azure AI Foundry agent execution, supports file and text input modes, and validates JSON output.
 
 ## Related Issue
-Fixes #5
+Fixes #6
 
 ## What Changed
-- Generic backend extraction flow with support for:
+- Unified generic ingestion flow with support for:
   - `--file-input`
   - `--text-input`
   - `--text-file`
   - appsettings `InputFile` and `InputText`
 - Prompt-file loading support from backend prompts folder.
 - Strict JSON contract validation with retry feedback loop.
-- Generic defaults and naming updates for Foundry agent configuration.
+- Simplified Foundry settings model by removing unused prompt version state.
 - Focused xUnit test project for `JsonContractValidator`.
 - Ignore updates for temporary local artifacts to keep commits clean.
 
-## Requirements Coverage (Issue #5)
+## Requirements Coverage (Issue #6)
 - Removed domain-specific wording from backend source and prompt files.
 - Kept implementation simple and deterministic.
 - Uses Azure AI Foundry agent path via `ExtractionService`.
@@ -45,4 +45,4 @@ Fixes #5
 - [x] Supports text input.
 - [x] Uses external prompt files.
 - [x] Validates JSON output.
-- [x] No Tax/DAC/MDR terms in updated source/prompt files.
+- [x] No domain-specific terms in updated source/prompt files.
