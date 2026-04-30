@@ -1,7 +1,10 @@
-## Summary
-This change keeps the backend feature implementation simple and generic while preserving Azure AI Foundry agent usage.
+## Description
+Implements Issue #5 with a simple, generic backend flow that uses Azure AI Foundry agent execution, supports text input, loads external prompt files, and validates JSON output.
 
-## What this PR includes
+## Related Issue
+Fixes #5
+
+## What Changed
 - Generic backend extraction flow with support for:
   - `--file-input`
   - `--text-input`
@@ -13,15 +16,15 @@ This change keeps the backend feature implementation simple and generic while pr
 - Focused xUnit test project for `JsonContractValidator`.
 - Ignore updates for temporary local artifacts to keep commits clean.
 
-## Guidelines compliance
-- Removed domain-specific wording in backend source and prompt files.
+## Requirements Coverage (Issue #5)
+- Removed domain-specific wording from backend source and prompt files.
 - Kept implementation simple and deterministic.
-- Uses Azure AI Foundry agent execution path via `ExtractionService`.
-- Accepts plain text input modes.
+- Uses Azure AI Foundry agent path via `ExtractionService`.
+- Accepts plain text input (`--text-input`, `--text-file`, and appsettings `InputText`).
 - Prompt files are externalized under `src/ComplianceAgent.Backend/prompts`.
 - Validates JSON output schema before final output.
 
-## Changed files
+## Files Changed
 - `.gitignore`
 - `compliance-agent.sln`
 - `src/ComplianceAgent.Backend/Program.cs`
@@ -36,6 +39,10 @@ This change keeps the backend feature implementation simple and generic while pr
 - `dotnet build .\\compliance-agent.sln` ✅
 - `dotnet test .\\tests\\ComplianceAgent.Backend.Tests\\ComplianceAgent.Backend.Tests.csproj` ✅
 
-## Notes
-- Local temporary output files are now ignored via `.gitignore`.
-- Existing unrelated working-tree changes were intentionally left untouched.
+## Checklist
+- [x] Feature remains simple and generic.
+- [x] Uses Azure AI Foundry agent execution path.
+- [x] Supports text input.
+- [x] Uses external prompt files.
+- [x] Validates JSON output.
+- [x] No Tax/DAC/MDR terms in updated source/prompt files.

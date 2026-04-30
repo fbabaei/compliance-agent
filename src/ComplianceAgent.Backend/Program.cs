@@ -410,7 +410,7 @@ public static class JsonContractValidator
 public class BackendSettings
 {
     public FoundrySettings Foundry { get; set; } = new();
-    public string InputFile { get; set; } = "data\\Output.json";
+    public string InputFile { get; set; } = string.Empty;
     public string InputText { get; set; } = string.Empty;
     public ValidationSettings Validation { get; set; } = new();
 }
