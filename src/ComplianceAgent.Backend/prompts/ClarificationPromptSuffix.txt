@@ -1,0 +1,1 @@
+Use the additional context below, provided by the user, to fill any previously missing required fields. Do not invent or guess values; only use information explicitly stated by the user. If the user's answer does not provide a value for a field, leave that field as null (or [] for arrays) and keep the existing JSON structure.

@@ -1,0 +1,14 @@
+Extract structured fields from the uploaded file '{{input_file}}'.
+
+Return JSON using this exact structure:
+{
+  "arrangementId": null,
+  "country": null,
+  "entities": [],
+  "description": null,
+  "transactionType": null,
+  "status": "draft"
+}
+
+Do not add extra fields.
+Return only JSON.

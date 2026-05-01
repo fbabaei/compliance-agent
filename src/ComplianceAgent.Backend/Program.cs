@@ -1,17 +1,64 @@
-using System.Text;
 using System.Text.Json;
-using Azure.AI.Projects;
-using Azure.Identity;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
+using ComplianceAgent.Services;
 
-const string AgentInstructions = """
-    You are a compliance assistant.
-    Use the Code Interpreter tool to inspect file content and summarize key points.
-    """;
+const string DefaultAgentInstructions = """
+You are a structured data extraction agent.
+
+Rules:
+- Return only valid JSON.
+- Do not include markdown code fences.
+- Extract only values that are explicitly present.
+- If a value is missing, return null (or [] for arrays).
+- Do not infer or invent values.
+""";
+
+const string DefaultExtractionPrompt = """
+Extract structured fields from the uploaded file '{{input_file}}'.
+
+Return JSON using this exact structure:
+{
+  "arrangementId": null,
+  "country": null,
+  "entities": [],
+  "description": null,
+  "transactionType": null,
+  "status": "draft"
+}
+
+Do not add extra fields.
+""";
+
+string? fileInputArg = null;
+string? textInputArg = null;
+string? textFileArg = null;
+bool noClarifyArg = false;
+var scriptedAnswers = new Queue<string>();
+
+for (int i = 0; i < args.Length; i++)
+{
+    if (args[i] is "--file-input" && i + 1 < args.Length)
+    {
+        fileInputArg = args[++i];
+    }
+    else if (args[i] is "--text-input" && i + 1 < args.Length)
+    {
+        textInputArg = args[++i];
+    }
+    else if (args[i] is "--text-file" && i + 1 < args.Length)
+    {
+        textFileArg = args[++i];
+    }
+    else if (args[i] is "--no-clarify")
+    {
+        noClarifyArg = true;
+    }
+    else if (args[i] is "--answer" && i + 1 < args.Length)
+    {
+        scriptedAnswers.Enqueue(args[++i]);
+    }
+}
 
 const string SettingsFileName = "appsettings.json";
-
 var settingsPath = ResolveSettingsPath(SettingsFileName)
     ?? throw new FileNotFoundException(
         $"Could not find '{SettingsFileName}'. Place it in repo root or in 'src\\ComplianceAgent.Backend'.");
@@ -26,64 +73,155 @@ if (string.IsNullOrWhiteSpace(settings.Foundry.Endpoint))
     throw new InvalidOperationException("Foundry:Endpoint is required in appsettings.json.");
 if (string.IsNullOrWhiteSpace(settings.Foundry.Model))
     throw new InvalidOperationException("Foundry:Model is required in appsettings.json.");
-if (string.IsNullOrWhiteSpace(settings.InputFile))
-    throw new InvalidOperationException("InputFile is required in appsettings.json.");
 
-var inputFile = ResolveInputFilePath(settings.InputFile, Path.GetDirectoryName(settingsPath)!)
-    ?? throw new FileNotFoundException($"Input file not found: {settings.InputFile}");
+var inputSource = ResolveInputSource(
+    fileInputArg,
+    textInputArg,
+    textFileArg,
+    settings,
+    Path.GetDirectoryName(settingsPath)!);
 
-var fileText = await File.ReadAllTextAsync(inputFile);
+Console.WriteLine($"Processing source: {inputSource.DisplayName} ({inputSource.Mode})");
 
-AIProjectClient projectClient = new(
-    new Uri(settings.Foundry.Endpoint),
-    new DefaultAzureCredential());
+var agentInstructions = await LoadPromptTextAsync(
+    "ExtractionAgentInstructions.txt",
+    DefaultAgentInstructions);
 
-AIAgent agent = projectClient.AsAIAgent(
-    model: settings.Foundry.Model,
-    name: settings.Foundry.AgentName,
-    instructions: AgentInstructions,
-    tools: [new HostedCodeInterpreterTool() { Inputs = [] }]);
+var extractionPromptTemplate = await LoadPromptTextAsync(
+    "ExtractionPrompt.txt",
+    DefaultExtractionPrompt);
 
-string prompt = $$"""
-    Read this file content and provide a short summary:
+var extractionPrompt = extractionPromptTemplate.Replace("{{input_file}}", Path.GetFileName(inputSource.FilePath));
+extractionPrompt = extractionPrompt.Replace("{{file_name}}", Path.GetFileName(inputSource.FilePath));
 
-    File name: {{Path.GetFileName(inputFile)}}
-    ```
-    {{fileText}}
-    ```
-    """;
-
-AgentResponse response = await agent.RunAsync(prompt);
-
-Console.WriteLine("Assistant response:");
-Console.WriteLine(response.Text);
-
-CodeInterpreterToolCallContent? toolCall = response.Messages
-    .SelectMany(m => m.Contents)
-    .OfType<CodeInterpreterToolCallContent>()
-    .FirstOrDefault();
-
-if (toolCall?.Inputs is not null)
+var foundrySettings = new FoundrySettings
 {
-    DataContent? codeInput = toolCall.Inputs.OfType<DataContent>().FirstOrDefault();
-    if (codeInput?.HasTopLevelMediaType("text") ?? false)
+    Endpoint = settings.Foundry.Endpoint,
+    Model = settings.Foundry.Model,
+    AgentName = settings.Foundry.AgentName
+};
+
+var extractionService = new ExtractionService(foundrySettings);
+var result = await extractionService.ExtractAsync(inputSource.FilePath, agentInstructions, extractionPrompt);
+
+var validationEnabled = settings.Validation.Enabled;
+var maxAttempts = Math.Max(1, settings.Validation.MaxAttempts);
+
+for (int attempt = 1; attempt < maxAttempts; attempt++)
+{
+    if (!validationEnabled)
     {
+        break;
+    }
+
+    var validation = JsonContractValidator.Validate(result.Json);
+    if (result.Success && validation.IsValid)
+    {
+        break;
+    }
+
+    var feedback = BuildValidationFeedback(result, validation.Errors);
+    Console.WriteLine($"Validation retry {attempt}/{maxAttempts - 1}: {feedback}");
+
+    var retryPrompt = $"""
+        {extractionPrompt}
+
+        Your previous output failed validation.
+        Fix these issues and return corrected JSON only:
+        {feedback}
+        """;
+
+    result = await extractionService.ExtractAsync(inputSource.FilePath, agentInstructions, retryPrompt);
+}
+
+var clarificationEnabled = settings.Clarification.Enabled && !noClarifyArg;
+var maxRounds = Math.Max(0, settings.Clarification.MaxRounds);
+
+if (result.Success && clarificationEnabled && maxRounds > 0)
+{
+    var clarificationPromptSuffix = await LoadPromptTextAsync(
+        "ClarificationPromptSuffix.txt",
+        ClarificationLoop.DefaultPromptSuffix);
+
+    for (int round = 1; round <= maxRounds; round++)
+    {
+        var missing = ClarificationLoop.DetectMissingFields(result.Json);
+        if (missing.Count == 0)
+        {
+            break;
+        }
+
+        var question = ClarificationLoop.BuildFollowUpQuestion(missing);
         Console.WriteLine();
-        Console.WriteLine("Code Interpreter input:");
-        Console.WriteLine(Encoding.UTF8.GetString(codeInput.Data.ToArray()));
+        Console.WriteLine($"Clarification round {round}/{maxRounds}: {question}");
+
+        string? answer;
+        if (scriptedAnswers.Count > 0)
+        {
+            answer = scriptedAnswers.Dequeue();
+            Console.WriteLine($"> {answer}");
+        }
+        else
+        {
+            Console.Write("> ");
+            answer = Console.IsInputRedirected ? Console.In.ReadLine() : Console.ReadLine();
+        }
+
+        if (string.IsNullOrWhiteSpace(answer) ||
+            string.Equals(answer.Trim(), "skip", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("Clarification skipped by user. Finalizing current draft.");
+            break;
+        }
+
+        var clarifiedPrompt = ClarificationLoop.MergeAnswerIntoPrompt(
+            extractionPrompt,
+            clarificationPromptSuffix,
+            question,
+            answer);
+
+        result = await extractionService.ExtractAsync(inputSource.FilePath, agentInstructions, clarifiedPrompt);
+
+        if (!result.Success)
+        {
+            break;
+        }
     }
 }
 
-CodeInterpreterToolResultContent? toolResult = response.Messages
-    .SelectMany(m => m.Contents)
-    .OfType<CodeInterpreterToolResultContent>()
-    .FirstOrDefault();
-
-if (toolResult?.Outputs?.OfType<TextContent>().FirstOrDefault() is { } output)
+if (result.Success)
 {
+    var finalValidation = JsonContractValidator.Validate(result.Json);
+    if (!finalValidation.IsValid)
+    {
+        Console.WriteLine("Warning: output JSON does not match required schema after retries.");
+        foreach (var error in finalValidation.Errors)
+        {
+            Console.WriteLine($"- {error}");
+        }
+    }
+
+    var outputDir = Path.Combine(Directory.GetCurrentDirectory(), "extractedjson");
+    Directory.CreateDirectory(outputDir);
+    var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+    var outputFileName = $"{Path.GetFileNameWithoutExtension(inputSource.FilePath)}_extracted_{timestamp}.json";
+    var outputPath = Path.Combine(outputDir, outputFileName);
+    await File.WriteAllTextAsync(outputPath, result.Json);
+
+    Console.WriteLine($"Extraction complete. Output saved to: {outputPath}");
     Console.WriteLine();
-    Console.WriteLine("Code Interpreter result:");
-    Console.WriteLine(output.Text);
+    Console.WriteLine(result.Json);
+}
+else
+{
+    Console.WriteLine($"Warning: {result.Error}");
+    Console.WriteLine("Raw output:");
+    Console.WriteLine(result.Json);
+}
+
+if (inputSource.DeleteAfterRun && File.Exists(inputSource.FilePath))
+{
+    File.Delete(inputSource.FilePath);
 }
 
 static string? ResolveSettingsPath(string fileName)
@@ -115,15 +253,333 @@ static string? ResolveInputFilePath(string configuredPath, string settingsDirect
     return candidates.FirstOrDefault(File.Exists);
 }
 
+static InputSource ResolveInputSource(
+    string? fileInputArg,
+    string? textInputArg,
+    string? textFileArg,
+    BackendSettings settings,
+    string settingsDirectory)
+{
+    if (!string.IsNullOrWhiteSpace(fileInputArg))
+    {
+        var filePath = ResolveInputFilePath(fileInputArg, settingsDirectory)
+            ?? throw new FileNotFoundException($"Input file not found: {fileInputArg}");
+        return new InputSource(filePath, Path.GetFileName(filePath), "file", false);
+    }
+
+    if (!string.IsNullOrWhiteSpace(textInputArg))
+    {
+        var tempPath = WriteTemporaryTextInput(textInputArg);
+        return new InputSource(tempPath, "inline-text", "text", true);
+    }
+
+    if (!string.IsNullOrWhiteSpace(textFileArg))
+    {
+        var textFilePath = ResolveInputFilePath(textFileArg, settingsDirectory)
+            ?? throw new FileNotFoundException($"Text file not found: {textFileArg}");
+        var textContent = File.ReadAllText(textFilePath);
+        var tempPath = WriteTemporaryTextInput(textContent);
+        return new InputSource(tempPath, Path.GetFileName(textFilePath), "text-file", true);
+    }
+
+    if (!string.IsNullOrWhiteSpace(settings.InputFile))
+    {
+        var filePath = ResolveInputFilePath(settings.InputFile, settingsDirectory)
+            ?? throw new FileNotFoundException($"Input file not found: {settings.InputFile}");
+        return new InputSource(filePath, Path.GetFileName(filePath), "file", false);
+    }
+
+    if (!string.IsNullOrWhiteSpace(settings.InputText))
+    {
+        var tempPath = WriteTemporaryTextInput(settings.InputText);
+        return new InputSource(tempPath, "configured-text", "text", true);
+    }
+
+    throw new InvalidOperationException("No input source specified. Use --file-input, --text-input, --text-file, InputFile, or InputText.");
+}
+
+static string WriteTemporaryTextInput(string text)
+{
+    var tempRoot = Path.Combine(Path.GetTempPath(), "generic-agent-input");
+    Directory.CreateDirectory(tempRoot);
+    var path = Path.Combine(tempRoot, $"input_{Guid.NewGuid():N}.txt");
+    File.WriteAllText(path, text);
+    return path;
+}
+
+static string? ResolvePromptsDirectory()
+{
+    var candidates = new[]
+    {
+        Path.Combine(Directory.GetCurrentDirectory(), "src", "prompts"),
+        Path.Combine(Directory.GetCurrentDirectory(), "src", "ComplianceAgent.Backend", "prompts"),
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "src", "prompts")),
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "src", "ComplianceAgent.Backend", "prompts")),
+        Path.Combine(AppContext.BaseDirectory, "prompts")
+    };
+
+    return candidates.FirstOrDefault(Directory.Exists);
+}
+
+static async Task<string> LoadPromptTextAsync(string fileName, string fallback)
+{
+    var promptsDir = ResolvePromptsDirectory();
+    if (!string.IsNullOrWhiteSpace(promptsDir))
+    {
+        var filePath = Path.Combine(promptsDir, fileName);
+        if (File.Exists(filePath))
+        {
+            return await File.ReadAllTextAsync(filePath);
+        }
+    }
+
+    Console.WriteLine($"Prompt file '{fileName}' not found. Using built-in default template.");
+    return fallback;
+}
+
+static string BuildValidationFeedback(ExtractionResult result, IReadOnlyList<string> schemaErrors)
+{
+    if (!result.Success)
+    {
+        return string.IsNullOrWhiteSpace(result.Error)
+            ? "Extraction failed without detailed error. Return strictly valid JSON."
+            : result.Error;
+    }
+
+    if (schemaErrors.Count == 0)
+    {
+        return "Response is valid JSON but did not pass strict schema validation.";
+    }
+
+    return string.Join("; ", schemaErrors);
+}
+
+public sealed record InputSource(
+    string FilePath,
+    string DisplayName,
+    string Mode,
+    bool DeleteAfterRun);
+
+public sealed record JsonValidationResult(
+    bool IsValid,
+    IReadOnlyList<string> Errors);
+
+public static class JsonContractValidator
+{
+    internal static readonly HashSet<string> RequiredProperties =
+    [
+        "arrangementId",
+        "country",
+        "entities",
+        "description",
+        "transactionType",
+        "status"
+    ];
+
+    public static JsonValidationResult Validate(string json)
+    {
+        var errors = new List<string>();
+
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException ex)
+        {
+            return new JsonValidationResult(false, [$"Invalid JSON: {ex.Message}"]);
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return new JsonValidationResult(false, ["Root element must be a JSON object."]);
+            }
+
+            var actualProperties = root.EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+
+            foreach (var required in RequiredProperties)
+            {
+                if (!actualProperties.Contains(required))
+                {
+                    errors.Add($"Missing required property '{required}'.");
+                }
+            }
+
+            foreach (var name in actualProperties)
+            {
+                if (!RequiredProperties.Contains(name))
+                {
+                    errors.Add($"Unexpected property '{name}'.");
+                }
+            }
+
+            ValidateNullableString(root, "arrangementId", errors);
+            ValidateNullableString(root, "country", errors);
+            ValidateNullableString(root, "description", errors);
+            ValidateNullableString(root, "transactionType", errors);
+
+            if (root.TryGetProperty("entities", out var entities))
+            {
+                if (entities.ValueKind != JsonValueKind.Array)
+                {
+                    errors.Add("Property 'entities' must be an array.");
+                }
+                else
+                {
+                    foreach (var entity in entities.EnumerateArray())
+                    {
+                        if (entity.ValueKind != JsonValueKind.String)
+                        {
+                            errors.Add("All 'entities' entries must be strings.");
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (root.TryGetProperty("status", out var status))
+            {
+                if (status.ValueKind != JsonValueKind.String)
+                {
+                    errors.Add("Property 'status' must be a string value 'draft'.");
+                }
+                else if (!string.Equals(status.GetString(), "draft", StringComparison.OrdinalIgnoreCase))
+                {
+                    errors.Add("Property 'status' must be 'draft'.");
+                }
+            }
+        }
+
+        return new JsonValidationResult(errors.Count == 0, errors);
+    }
+
+    private static void ValidateNullableString(JsonElement root, string property, ICollection<string> errors)
+    {
+        if (!root.TryGetProperty(property, out var value))
+        {
+            return;
+        }
+
+        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.String)
+        {
+            return;
+        }
+
+        errors.Add($"Property '{property}' must be string or null.");
+    }
+}
+
 public class BackendSettings
 {
     public FoundrySettings Foundry { get; set; } = new();
-    public string InputFile { get; set; } = "data\\Output.json";
+    public string InputFile { get; set; } = string.Empty;
+    public string InputText { get; set; } = string.Empty;
+    public ValidationSettings Validation { get; set; } = new();
+    public ClarificationSettings Clarification { get; set; } = new();
 }
 
-public class FoundrySettings
+public class ValidationSettings
 {
-    public string Endpoint { get; set; } = string.Empty;
-    public string Model { get; set; } = "gpt-4o-mini";
-    public string AgentName { get; set; } = "compliance-agent-backend";
+    public bool Enabled { get; set; } = true;
+    public int MaxAttempts { get; set; } = 2;
+}
+
+public class ClarificationSettings
+{
+    public bool Enabled { get; set; } = true;
+    public int MaxRounds { get; set; } = 3;
+}
+
+public static class ClarificationLoop
+{
+    public const string DefaultPromptSuffix =
+        "Use the additional context below, provided by the user, to fill any previously missing fields. Do not invent values.";
+
+    public static IReadOnlyList<string> DetectMissingFields(string json)
+    {
+        var missing = new List<string>();
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return missing;
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return missing;
+            }
+
+            foreach (var name in JsonContractValidator.RequiredProperties)
+            {
+                if (name == "status")
+                {
+                    continue;
+                }
+
+                if (!root.TryGetProperty(name, out var value))
+                {
+                    missing.Add(name);
+                    continue;
+                }
+
+                if (value.ValueKind == JsonValueKind.Null)
+                {
+                    missing.Add(name);
+                    continue;
+                }
+
+                if (value.ValueKind == JsonValueKind.String &&
+                    string.IsNullOrWhiteSpace(value.GetString()))
+                {
+                    missing.Add(name);
+                    continue;
+                }
+
+                if (value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 0)
+                {
+                    missing.Add(name);
+                }
+            }
+        }
+
+        return missing;
+    }
+
+    public static string BuildFollowUpQuestion(IReadOnlyList<string> missing)
+    {
+        if (missing == null || missing.Count == 0)
+        {
+            return "No additional information is required.";
+        }
+
+        var fieldList = string.Join(", ", missing);
+        return $"Some required fields are still missing: {fieldList}. Please provide any additional context to fill them, or type 'skip' to finalize the draft as-is.";
+    }
+
+    public static string MergeAnswerIntoPrompt(
+        string basePrompt,
+        string promptSuffix,
+        string question,
+        string answer)
+    {
+        var trimmedAnswer = (answer ?? string.Empty).Trim();
+        return $"""
+            {basePrompt}
+
+            {promptSuffix}
+
+            Follow-up question asked: {question}
+            User answer: {trimmedAnswer}
+            """;
+    }
 }

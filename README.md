@@ -26,3 +26,37 @@ The app will:
 2. create a Foundry agent with `HostedCodeInterpreterTool`
 3. ask the agent to summarize the file
 4. print assistant output and code-interpreter tool output (when available)
+
+## Text-Input Clarification Loop (Issue #7)
+
+After the agent produces a draft, the backend runs a generic clarification loop. When the draft still has required fields that are null, empty, or empty arrays, the backend asks one follow-up question per round, accepts free-text input, and re-runs extraction with the merged context.
+
+Configuration in `appsettings.json`:
+
+```json
+"Clarification": {
+  "Enabled": true,
+  "MaxRounds": 3
+}
+```
+
+CLI flags:
+
+- `--no-clarify` — disable the clarification loop for the run.
+- `--answer "<text>"` — repeatable; supplies scripted answers for non-interactive runs (one answer per round, in order).
+- Type `skip` (or empty input) at the prompt to finalize the current draft.
+
+Examples:
+
+```powershell
+# Interactive run
+dotnet run --project .\src\ComplianceAgent.Backend\ComplianceAgent.Backend.csproj -- --text-input "Some draft text"
+
+# Disable clarification
+dotnet run --project .\src\ComplianceAgent.Backend\ComplianceAgent.Backend.csproj -- --text-input "Some draft text" --no-clarify
+
+# Scripted answers
+dotnet run --project .\src\ComplianceAgent.Backend\ComplianceAgent.Backend.csproj -- --text-input "Some draft text" --answer "United States" --answer "Acme Corp"
+```
+
+The loop is bounded by `Clarification.MaxRounds` and only fires when the draft is otherwise valid JSON.

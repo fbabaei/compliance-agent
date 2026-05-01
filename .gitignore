@@ -54,6 +54,11 @@ TestResult.xml
 nunit-*.xml
 
 /data
+*/prompts/*
+extractedjson/
+tmp/
+tmp_*.txt
+tmp_issue*_pr_body.md
 
 appsettings.json
 appsettings.Development.json
