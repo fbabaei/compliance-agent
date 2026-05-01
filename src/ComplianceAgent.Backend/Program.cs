@@ -151,9 +151,13 @@ if (result.Success && clarificationEnabled && maxRounds > 0)
             break;
         }
 
+        var summary = ClarificationLoop.SummarizeExtractedFields(result.Json);
         var question = ClarificationLoop.BuildFollowUpQuestion(missing);
         Console.WriteLine();
-        Console.WriteLine($"Clarification round {round}/{maxRounds}: {question}");
+        Console.WriteLine($"Clarification round {round}/{maxRounds}");
+        Console.WriteLine("Here's what I extracted so far:");
+        Console.WriteLine(summary);
+        Console.WriteLine(question);
 
         string? answer;
         if (scriptedAnswers.Count > 0)
@@ -167,10 +171,9 @@ if (result.Success && clarificationEnabled && maxRounds > 0)
             answer = Console.IsInputRedirected ? Console.In.ReadLine() : Console.ReadLine();
         }
 
-        if (string.IsNullOrWhiteSpace(answer) ||
-            string.Equals(answer.Trim(), "skip", StringComparison.OrdinalIgnoreCase))
+        if (ClarificationLoop.IsFinalizeAnswer(answer))
         {
-            Console.WriteLine("Clarification skipped by user. Finalizing current draft.");
+            Console.WriteLine("Finalizing current draft.");
             break;
         }
 
@@ -178,7 +181,7 @@ if (result.Success && clarificationEnabled && maxRounds > 0)
             extractionPrompt,
             clarificationPromptSuffix,
             question,
-            answer);
+            answer ?? string.Empty);
 
         result = await extractionService.ExtractAsync(inputSource.FilePath, agentInstructions, clarifiedPrompt);
 
@@ -563,7 +566,65 @@ public static class ClarificationLoop
         }
 
         var fieldList = string.Join(", ", missing);
-        return $"Some required fields are still missing: {fieldList}. Please provide any additional context to fill them, or type 'skip' to finalize the draft as-is.";
+        return $"Some required fields are still missing: {fieldList}. Please provide any additional context to fill them, or type 'create' / 'proceed' / 'skip' to finalize the draft as-is.";
+    }
+
+    public static string SummarizeExtractedFields(string json)
+    {
+        var lines = new List<string>();
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return "(no valid draft available yet)";
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return "(draft is not an object)";
+            }
+
+            foreach (var name in JsonContractValidator.RequiredProperties)
+            {
+                if (!root.TryGetProperty(name, out var value))
+                {
+                    lines.Add($"  - {name}: (missing)");
+                    continue;
+                }
+
+                lines.Add($"  - {name}: {RenderValue(value)}");
+            }
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    public static bool IsFinalizeAnswer(string? answer)
+    {
+        if (string.IsNullOrWhiteSpace(answer))
+        {
+            return true;
+        }
+
+        var normalized = answer.Trim().ToLowerInvariant();
+        return normalized is "skip" or "create" or "proceed" or "done" or "finalize";
+    }
+
+    private static string RenderValue(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Null => "null",
+            JsonValueKind.String => string.IsNullOrWhiteSpace(value.GetString()) ? "(empty)" : $"\"{value.GetString()}\"",
+            JsonValueKind.Array => value.GetArrayLength() == 0 ? "[]" : value.GetRawText(),
+            _ => value.GetRawText()
+        };
     }
 
     public static string MergeAnswerIntoPrompt(

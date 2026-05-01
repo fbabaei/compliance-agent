@@ -9,6 +9,8 @@ Fixes #7
 - Added static `ClarificationLoop` helper with:
   - `DetectMissingFields(json)` — finds required fields that are null, empty string, or empty array (excluding `status`).
   - `BuildFollowUpQuestion(missing)` — produces a single, generic follow-up question listing the missing field names.
+  - `SummarizeExtractedFields(json)` — renders the current draft so the user sees what was already extracted before answering (matches Technical-Design §5.3 "Here's what I extracted: [summary]").
+  - `IsFinalizeAnswer(answer)` — recognizes the design's exit keywords (`create`, `proceed`, `done`, `finalize`, `skip`, plus empty input).
   - `MergeAnswerIntoPrompt(basePrompt, suffix, question, answer)` — appends user context to the existing extraction prompt without inventing values.
 - Wired the clarification loop into `Program.cs` to run after the JSON-validation retry loop and before final draft persistence.
 - Added CLI flags `--no-clarify` and repeatable `--answer <text>` for non-interactive scripted runs and tests.
@@ -33,8 +35,8 @@ Fixes #7
 (Plus shared infrastructure already introduced by issue #6 / #9 work: `compliance-agent.sln`, `src/ComplianceAgent.Services/*`, `src/ComplianceAgent.Backend/prompts/Extraction*.txt`, `tests/ComplianceAgent.Backend.Tests/ComplianceAgent.Backend.Tests.csproj`, `tests/ComplianceAgent.Backend.Tests/JsonContractValidatorTests.cs`, `.gitignore`.)
 
 ## Validation
-- `dotnet build .\\compliance-agent.sln` ✅
-- `dotnet test .\\tests\\ComplianceAgent.Backend.Tests\\ComplianceAgent.Backend.Tests.csproj` ✅ (9/9 tests passing)
+- `dotnet build .\\compliance-agent.sln` ✅ (0 warnings, 0 errors)
+- `dotnet test .\\tests\\ComplianceAgent.Backend.Tests\\ComplianceAgent.Backend.Tests.csproj` ✅ (20/20 tests passing)
 
 ## Checklist
 - [x] Generic and deterministic — no domain-specific vocabulary.

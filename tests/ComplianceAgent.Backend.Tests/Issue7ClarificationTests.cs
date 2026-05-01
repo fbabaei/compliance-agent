@@ -77,6 +77,8 @@ public class Issue7ClarificationTests
 
         Assert.Contains("arrangementId", question);
         Assert.Contains("country", question);
+        Assert.Contains("create", question);
+        Assert.Contains("proceed", question);
         Assert.Contains("skip", question);
     }
 
@@ -94,5 +96,47 @@ public class Issue7ClarificationTests
         Assert.Contains("SUFFIX_TEXT", merged);
         Assert.Contains("What is the country?", merged);
         Assert.Contains("United States", merged);
+    }
+
+    [Fact]
+    public void SummarizeExtractedFields_ListsAllRequiredFieldsWithRenderedValues()
+    {
+        const string json = """
+            {
+              "arrangementId": "A-1",
+              "country": null,
+              "entities": ["Acme"],
+              "description": "",
+              "transactionType": "merger",
+              "status": "draft"
+            }
+            """;
+
+        var summary = ClarificationLoop.SummarizeExtractedFields(json);
+
+        Assert.Contains("arrangementId", summary);
+        Assert.Contains("\"A-1\"", summary);
+        Assert.Contains("country", summary);
+        Assert.Contains("null", summary);
+        Assert.Contains("entities", summary);
+        Assert.Contains("Acme", summary);
+        Assert.Contains("description", summary);
+        Assert.Contains("(empty)", summary);
+    }
+
+    [Theory]
+    [InlineData("", true)]
+    [InlineData("   ", true)]
+    [InlineData("skip", true)]
+    [InlineData("SKIP", true)]
+    [InlineData("create", true)]
+    [InlineData("Proceed", true)]
+    [InlineData("done", true)]
+    [InlineData("finalize", true)]
+    [InlineData("United States", false)]
+    [InlineData("the country is US", false)]
+    public void IsFinalizeAnswer_RecognizesExitKeywordsAndEmpty(string? input, bool expected)
+    {
+        Assert.Equal(expected, ClarificationLoop.IsFinalizeAnswer(input));
     }
 }

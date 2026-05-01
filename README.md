@@ -44,7 +44,9 @@ CLI flags:
 
 - `--no-clarify` — disable the clarification loop for the run.
 - `--answer "<text>"` — repeatable; supplies scripted answers for non-interactive runs (one answer per round, in order).
-- Type `skip` (or empty input) at the prompt to finalize the current draft.
+- Type `create`, `proceed`, `done`, `finalize`, `skip`, or just press Enter at the prompt to finalize the current draft.
+
+Each round prints a summary of the fields extracted so far and lists the missing fields before asking for additional context — matching the human-in-the-loop pattern in `docs/Technical-Design.md` §5.3.
 
 Examples:
 
